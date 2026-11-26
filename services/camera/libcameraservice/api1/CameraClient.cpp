@@ -500,8 +500,11 @@ void CameraClient::releaseRecordingFrameHandle(native_handle_t *handle) {
     {
         Mutex::Autolock l(mAvailableCallbackBuffersLock);
         if (!mAvailableCallbackBuffers.empty()) {
-            dataPtr = mAvailableCallbackBuffers.back();
-            mAvailableCallbackBuffers.pop_back();
+            // The legacy QCamera2 blob identifies the frame by the metadata
+            // packet itself; frames are released in delivery order, so serve
+            // the queue FIFO instead of LIFO.
+            dataPtr = mAvailableCallbackBuffers.front();
+            mAvailableCallbackBuffers.erase(mAvailableCallbackBuffers.begin());
         }
     }
 
@@ -520,7 +523,9 @@ void CameraClient::releaseRecordingFrameHandle(native_handle_t *handle) {
     }
 
     VideoNativeHandleMetadata *metadata = (VideoNativeHandleMetadata*)(dataPtr->pointer());
-    metadata->eType = kMetadataBufferTypeNativeHandleSource;
+    // Keep the legacy tagging the blob itself produced so its
+    // release_recording_frame() recognizes the packet (see note above).
+    metadata->eType = kMetadataBufferTypeCameraSource;
     metadata->pHandle = handle;
 
     mHardware->releaseRecordingFrame(dataPtr);
@@ -989,6 +994,22 @@ void CameraClient::handleGenericData(int32_t msgType,
     const sp<IMemory>& dataPtr, camera_frame_metadata_t *metadata) {
     sp<hardware::ICameraClient> c = mRemoteCallback;
     mLock.unlock();
+    // Recording frames from legacy QCamera2 carry a native_handle pointer that
+    // is only meaningful in this process; marshal it as a real native_handle so
+    // its fd is duped across the binder instead of leaking a foreign pointer.
+    if (c != 0 && dataPtr != nullptr && (msgType & CAMERA_MSG_VIDEO_FRAME) &&
+            dataPtr->size() == sizeof(VideoNativeHandleMetadata)) {
+        VideoNativeHandleMetadata *packet =
+            (VideoNativeHandleMetadata*)(dataPtr->pointer());
+        if (packet->pHandle != nullptr) {
+            {
+                Mutex::Autolock l(mAvailableCallbackBuffersLock);
+                mAvailableCallbackBuffers.push_back(dataPtr);
+            }
+            c->recordingFrameHandleCallbackTimestamp(systemTime(), packet->pHandle);
+            return;
+        }
+    }
     if (c != 0) {
         c->dataCallback(msgType, dataPtr, metadata);
     }
@@ -1005,7 +1026,12 @@ void CameraClient::handleGenericDataTimestamp(nsecs_t timestamp,
         if (dataPtr->size() == sizeof(VideoNativeHandleMetadata)) {
             VideoNativeHandleMetadata *metadata =
                 (VideoNativeHandleMetadata*)(dataPtr->pointer());
-            if (metadata->eType == kMetadataBufferTypeNativeHandleSource) {
+            // The legacy QCamera2 (KK) blob tags recording-frame metadata as
+            // CameraSource/GrallocSource while still carrying a native_handle
+            // pointer in this process. Marshalling that handle over binder
+            // dups its fd so the codec receives a valid local handle instead
+            // of a dead foreign pointer (b/25884056 workaround upstream).
+            if (metadata->pHandle != nullptr) {
                 handle = metadata->pHandle;
             }
         }

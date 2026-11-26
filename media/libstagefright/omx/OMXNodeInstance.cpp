@@ -1083,7 +1083,11 @@ status_t OMXNodeInstance::updateNativeHandleInMeta(
     if (mMetadataType[portIndex] == kMetadataBufferTypeNativeHandleSource
             && data->capacity() >= sizeof(VideoNativeHandleMetadata)) {
         VideoNativeHandleMetadata &metadata = *(VideoNativeHandleMetadata *)(data->data());
-        metadata.eType = mMetadataType[portIndex];
+        // The QCOM (KK-era) video encoder only understands the legacy camera
+        // metadata layout {buffer_type = LEGACY_CAM_SOURCE, meta_handle}.
+        // Advertising it as kMetadataBufferTypeNativeHandleSource makes its
+        // empty_this_buffer_proxy reject the packet ("Unkown source/metahandle").
+        metadata.eType = kMetadataBufferTypeCameraSource;
         metadata.pHandle =
             nativeHandle == NULL ? NULL : const_cast<native_handle*>(nativeHandle->handle());
     } else {
