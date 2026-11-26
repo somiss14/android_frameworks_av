@@ -4421,6 +4421,32 @@ status_t ACodec::setupAVCEncoderParameters(const sp<AMessage> &msg) {
             }
         }
 #endif
+        // b8080f: when the app does not specify a level (CamcorderProfile path on N:
+        // MediaProfiles cannot carry profile/level at all), the level stays at what
+        // the encoder returns from getParameter() -- the KK-era qcom venc defaults to
+        // Level 3.2, and it then enforces that level itself: 1080p recording stalls at
+        // ~15 fps, 720p at ~21 fps. Pick the smallest level that accommodates the
+        // configured size/frame-rate/bitrate instead (clamped to what the Venus on
+        // this SoC is specced for).
+        int32_t vw = 0, vh = 0;
+        if (!(mInputFormat != NULL && mInputFormat->findInt32("width", &vw) &&
+                mInputFormat->findInt32("height", &vh)) &&
+            !(mOutputFormat != NULL && mOutputFormat->findInt32("width", &vw) &&
+                mOutputFormat->findInt32("height", &vh))) {
+            vw = vh = 0;
+        }
+        if (vw > 0 && vh > 0) {
+            int level = getAVCLevelFor(vw, vh, (int)(frameRate + 0.5f), bitrate,
+                    h264type.eProfile);
+            if (level != 0) {
+                if (level > OMX_VIDEO_AVCLevel42) {
+                    level = OMX_VIDEO_AVCLevel42;
+                }
+                if ((OMX_VIDEO_AVCLEVELTYPE)level > h264type.eLevel) {
+                    h264type.eLevel = (OMX_VIDEO_AVCLEVELTYPE)level;
+                }
+            }
+        }
     }
 
     ALOGI("setupAVCEncoderParameters with [profile: %s] [level: %s]",
